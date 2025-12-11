@@ -1,0 +1,115 @@
+# .gitignore para proyectos C/C++
+
+# Sistema / editores
+.DS_Store
+Thumbs.db
+*.swp
+*~
+.~*
+*.tmp
+
+# Carpetas de build comunes
+/build/
+/build-*/
+/cmake-build-*/
+_out/
+/out/
+/bin/
+/dist/
+/_InstallArea/
+/Debug/
+/Release/
+/_Release/
+obj/
+_obj/
+
+# Archivos objeto, binarios y librerías
+*.o
+*.obj
+*.lo
+*.a
+*.lib
+*.dll
+*.so
+*.dylib
+*.exe
+*.elf
+*.out
+*.app
+
+# Archivos generados por C/C++ toolchain
+*.gch
+*.pch
+*.d
+*.gcda
+*.gcno
+*.gcov
+*.map
+*.sym
+
+# Archivos de enlace/depuración
+*.pdb
+*.ilk
+*.ipdb
+*.stackdump
+*.dSYM/
+
+# CMake
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+CTestTestfile.cmake
+install_manifest.txt
+
+# Conan / vcpkg / paquetes
+conaninfo.txt
+conanbuildinfo.*
+conan/
+vcpkg_installed/
+packages/
+
+# IDEs y editores
+.vscode/
+.idea/
+*.iml
+*.ipr
+*.iws
+*.suo
+*.user
+*.userosscache
+*.VC.db
+.vs/
+*.vcxproj.user
+*.workspace
+
+# Xcode
+*.xcworkspace
+*.xcuserdata
+*.xccheckout
+*.xcodeproj/project.xcworkspace/
+
+# Índices / tags / caches
+tags
+TAGS
+cscope.*
+.clangd/
+clangd-index/
+ccache/
+*.cache
+*.log
+
+# Otros
+*.generated
+*.timestamp
+*.bak
+*.orig
+.env
+
+# Ignore common MSVC/msbuild output (nested Debug/Release and platform folders)
+x64/
+x86/
+Debug/
+Release/
+*.tlog
+*.lastbuildstate
+*.idb
