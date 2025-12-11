@@ -1,7 +1,0 @@
-<Solution>
-  <Configurations>
-    <Platform Name="x64" />
-    <Platform Name="x86" />
-  </Configurations>
-  <Project Path="vulnscanner.vcxproj" Id="26b2f6ee-5cf9-46b7-9143-cc93744f9136" />
-</Solution>
