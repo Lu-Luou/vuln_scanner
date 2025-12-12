@@ -1,4 +1,4 @@
-# Vulnscanner simple y en C
+# Vulnscanner simple y en C usando "GPT-5.1 Codex"
 
 ```txt
 +-------------------------------------------------------+

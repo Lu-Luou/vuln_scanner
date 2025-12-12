@@ -6,24 +6,6 @@
 #include <errno.h>
 #include <time.h>
 
-// Compila diferentes librerías según plataforma
-#ifdef _WIN32
-	#include <winsock2.h>
-	#include <ws2tcpip.h>
-	typedef SOCKET socket_t;
-	#define CLOSESOCK closesocket
-#else
-	#include <unistd.h>
-	#include <fcntl.h>
-	#include <sys/types.h>
-	#include <sys/socket.h>
-	#include <arpa/inet.h>
-	#include <netdb.h>
-	typedef int socket_t;
-	#define INVALID_SOCKET (-1)
-	#define SOCKET_ERROR   (-1)
-	#define CLOSESOCK close
-#endif
 
 static int set_nonblocking(socket_t s) {
 #ifdef _WIN32

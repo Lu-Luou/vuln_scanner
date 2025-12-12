@@ -4,33 +4,8 @@
 #include <stdlib.h>
 #include <string.h>
 
-#ifdef _WIN32
-	#include <windows.h>
-#else
-	#include <pthread.h>
-#endif
-#include <stddef.h>
-
-#define MAX_PORT 65535
-
 static const uint16_t popular_ports[] = {3306, 8080, 5432, 6379, 27017, 11211, 9200};
 static const size_t popular_count = sizeof(popular_ports) / sizeof(popular_ports[0]);
-
-#ifdef _WIN32
-	typedef HANDLE thread_handle_t;
-	typedef CRITICAL_SECTION mutex_t;
-	static void mutex_init(mutex_t *m) { InitializeCriticalSection(m); }
-	static void mutex_lock(mutex_t *m) { EnterCriticalSection(m); }
-	static void mutex_unlock(mutex_t *m) { LeaveCriticalSection(m); }
-	static void mutex_destroy(mutex_t *m) { DeleteCriticalSection(m); }
-#else
-	typedef pthread_t thread_handle_t;
-	typedef pthread_mutex_t mutex_t;
-	static void mutex_init(mutex_t *m) { pthread_mutex_init(m, NULL); }
-	static void mutex_lock(mutex_t *m) { pthread_mutex_lock(m); }
-	static void mutex_unlock(mutex_t *m) { pthread_mutex_unlock(m); }
-	static void mutex_destroy(mutex_t *m) { pthread_mutex_destroy(m); }
-#endif
 
 static int add_port(uint16_t port, uint8_t *seen, uint16_t *buffer, size_t *count, size_t max_count) {
 	if (port == 0 || port > MAX_PORT) return 0;

@@ -3,8 +3,26 @@
 #define NETWORK_H
 
 #include <stdint.h>
-
 #include "config.h"
+
+// Es más rapido que el compilador labure antes de usar la variable cfg xdd
+#ifdef _WIN32
+	#include <winsock2.h>
+	#include <ws2tcpip.h>
+	typedef SOCKET socket_t;
+	#define CLOSESOCK closesocket
+#else
+	#include <unistd.h>
+	#include <fcntl.h>
+	#include <sys/types.h>
+	#include <sys/socket.h>
+	#include <arpa/inet.h>
+	#include <netdb.h>
+	typedef int socket_t;
+	#define INVALID_SOCKET (-1)
+	#define SOCKET_ERROR   (-1)
+	#define CLOSESOCK close
+#endif
 
 typedef enum {
 	NET_PORT_OPEN = 0,
