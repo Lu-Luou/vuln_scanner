@@ -10,7 +10,7 @@ typedef enum {
 
 typedef struct {
 	OsType os;
-	int verbose; // 0 = silencioso, 1 = informacion basica, 2 = detallado (dump all data)
+	int verbose; // 0 = solo abiertos, 1 = +filtrados, 2 = todo (incluye cerrados/errores)
 } AppConfig;
 
 void config_init(AppConfig *cfg);
