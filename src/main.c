@@ -6,6 +6,6 @@ int main() {
 }
 
 // cd /c/Users/ruber/source/repos/vulnscanner/build
-// cmake ..
+// cmake ..    # only to include new files
 // mingw32-make
 // ./vulnscanner.exe
