@@ -8,6 +8,12 @@
 #error "Este test es para Windows (Winsock)"
 #endif
 
+/*
+    Pequeño test de Winsock en C para Windows.
+    Crea un socket TCP, se conecta a localhost:80, envía una petición HTTP simple y recibe la respuesta.
+    A modo de prueba para intruducirme con Winsock en C.
+*/
+
 int main(int argc, char **argv) {
 	// Inicialización de Winsock:
 	// WSAStartup solicita al sistema que cargue y prepare la biblioteca Winsock
