@@ -227,8 +227,16 @@ static NetPortState connect_udp(const char *host, uint16_t port, int timeout_ms)
 		s = (socket_t)socket(p->ai_family, p->ai_socktype, p->ai_protocol);
 		if (s == INVALID_SOCKET) continue;
 
-		const char payload[] = "\0"; // datagrama minimo
-		ret = sendto(s, payload, (int)sizeof(payload), 0, p->ai_addr, (int)p->ai_addrlen);
+		/* Conectar el socket UDP: con "connect" el kernel asocia peer
+		   y algunos sistemas propagan ICMP 'port unreachable' como
+		   errores en recv(), lo que ayuda a distinguir 'closed' de 'filtered'.*/
+		if (connect(s, p->ai_addr, (int)p->ai_addrlen) == SOCKET_ERROR) {
+			CLOSESOCK(s);
+			continue;
+		}
+
+		const char payload[1] = {0};
+		ret = send(s, payload, 1, 0);
 		if (ret == SOCKET_ERROR) {
 			CLOSESOCK(s);
 			continue;
@@ -243,21 +251,36 @@ static NetPortState connect_udp(const char *host, uint16_t port, int timeout_ms)
 
 		ret = select((int)(s + 1), &rfds, NULL, NULL, &tv);
 		if (ret > 0 && FD_ISSET(s, &rfds)) {
-			char buf[64];
-			ret = recvfrom(s, buf, sizeof(buf), 0, NULL, NULL); // probar si llega algo
-			if (ret >= 0) {
-				state = NET_PORT_OPEN; // recibimos algo
+			char buf[256];
+			int r = recv(s, buf, (int)sizeof(buf), 0);
+			if (r > 0) {
+				state = NET_PORT_OPEN; // recibimos datos
+			} else if (r == 0) {
+				state = NET_PORT_FILTERED; // EOF improbable en UDP
 			} else {
-				state = NET_PORT_ERROR;
+#ifdef _WIN32
+				int werr = WSAGetLastError();
+				if (werr == WSAECONNRESET) {
+					state = NET_PORT_CLOSED; // ICMP port unreachable
+				} else {
+					state = NET_PORT_ERROR;
+				}
+#else
+				if (errno == ECONNREFUSED) {
+					state = NET_PORT_CLOSED; // ICMP port unreachable
+				} else {
+					state = NET_PORT_ERROR;
+				}
+#endif
 			}
 		} else if (ret == 0) {
-			state = NET_PORT_FILTERED; // sin respuesta
+			state = NET_PORT_FILTERED; // sin respuesta dentro del timeout
 		} else {
-			state = NET_PORT_ERROR;
+			state = NET_PORT_ERROR; // select devolvió error
 		}
 
 		CLOSESOCK(s);
-		break; // probamos solo la primera direccion que realmente funcione
+		break; // usar la primer address que funciona
 	}
 
 	freeaddrinfo(res);

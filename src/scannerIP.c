@@ -4,7 +4,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-static const uint16_t popular_ports[] = {3306, 8080, 5432, 6379, 27017, 11211, 9200};
+static const uint16_t popular_ports[] = {3306, 8080, 5432, 6379, 27017, 11211, 9200, 54321 /* <- test */};
 static const size_t popular_count = sizeof(popular_ports) / sizeof(popular_ports[0]);
 
 static int add_port(uint16_t port, uint8_t *seen, uint16_t *buffer, size_t *count, size_t max_count) {
@@ -160,10 +160,14 @@ static void *worker_thread(void *param)
 		uint16_t port = w->list->ports[idx];
 		NetPortState st = scan_port(w->host, port, w->mode, w->timeout_ms, w->cfg->verbose);
 		int should_store = 0;
-		if (st == NET_PORT_OPEN || st == NET_PORT_CLOSED || st == NET_PORT_ERROR) {
-			should_store = 1; // siempre guardamos abiertos/cerrados/error
-		} else if (w->cfg->verbose > 1 && st == NET_PORT_FILTERED) {
-			should_store = 1; // filtrados solo si verbose
+		if (w->cfg->verbose > 1) {
+			/* verbose >= 2: almacenar todos los estados */
+			should_store = 1;
+		} else {
+			/* verbose <= 1: sólo almacenar puertos abiertos o con error */
+			if (st == NET_PORT_OPEN || st == NET_PORT_ERROR) {
+				should_store = 1;
+			}
 		}
 
 		if (should_store) {
@@ -294,8 +298,11 @@ int scanner_run(const char *host, const PortList *list, ScanMode mode, const App
 
 	for (size_t i = 0; i < res_count; ++i) {
 		const PrintedResult *pr = &results[i];
-		if (pr->state == NET_PORT_FILTERED) {
-			continue; // no imprimir filtrados en el resumen final
+		/* Si verbose <= 1, sólo mostrar abiertos o errores. En verbose >=2 mostrar todo. */
+		if (cfg->verbose <= 1) {
+			if (!(pr->state == NET_PORT_OPEN || pr->state == NET_PORT_ERROR)) {
+				continue;
+			}
 		}
 		const char *proto = (pr->mode == SCAN_UDP) ? "udp" : "tcp";
 		if (pr->banner_len > 0) {
