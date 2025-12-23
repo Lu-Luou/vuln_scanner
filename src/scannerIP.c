@@ -4,7 +4,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-static const uint16_t popular_ports[] = {3306, 8080, 5432, 6379, 27017, 11211, 9200, 54321 /* <- test */};
+static const uint16_t popular_ports[] = {2049, 2222, 3000, 3306, 3389, 4000, 5000, 5173, 5900, 8000, 8080, 8443, 5432, 6379, 27017, 11211, 9200, 9092, 25565, 54321 /* <- test */};
 static const size_t popular_count = sizeof(popular_ports) / sizeof(popular_ports[0]);
 
 static int add_port(uint16_t port, uint8_t *seen, uint16_t *buffer, size_t *count, size_t max_count) {
@@ -193,9 +193,13 @@ static void *worker_thread(void *param)
 		size_t processed_now = ++(*(w->processed));
 		if (processed_now >= *(w->next_progress)) {
 			*(w->next_progress) += 128;
-			mutex_lock(w->print_mtx);
-			printf("[progreso] %zu/%zu puertos escaneados\n", processed_now, w->total_ports);
-			mutex_unlock(w->print_mtx);
+			/* Solo imprimir progreso si verbose > 1. En verbose <= 1
+			   actualizamos el contador pero no mostramos nada. */
+			if (w->cfg && w->cfg->verbose > 1) {
+				mutex_lock(w->print_mtx);
+				printf("[progreso] %zu/%zu puertos escaneados\n", processed_now, w->total_ports);
+				mutex_unlock(w->print_mtx);
+			}
 		}
 		mutex_unlock(w->progress_mtx);
 	}
