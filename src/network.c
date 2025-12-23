@@ -46,25 +46,37 @@ void net_cleanup(void) {
 #endif
 }
 
+/*
+ * Nota:
+ *   - Emplea sockets no bloqueantes para poder imponer un timeout efectivo usando select.
+ *   - Cierra cada socket que crea para evitar fugas de descriptor.
+ *   - El significado de NET_PORT_FILTERED lo uso cuando la espera expira (select retorna 0),
+ *     lo que suele indicar que un firewall/proxy o algo está descartando paquetes en lugar de responder.
+ */
 static NetPortState connect_with_timeout(const char *host, uint16_t port, int timeout_ms) {
 	char port_str[8];
+
+	// Inicializo struct addrinfo para solicitar direcciones de
+    // tipo stream/TCP (AF_UNSPEC, SOCK_STREAM, IPPROTO_TCP).
 	struct addrinfo hints; 
 	struct addrinfo *res = NULL;
 	socket_t s = INVALID_SOCKET;
 	int ret;
-
+	// Convierto el puerto a string en port_str.
 	snprintf(port_str, sizeof(port_str), "%u", (unsigned)port);
+
 	memset(&hints, 0, sizeof(hints));
 	hints.ai_family = AF_UNSPEC;
 	hints.ai_socktype = SOCK_STREAM;
 	hints.ai_protocol = IPPROTO_TCP;
 
-	ret = getaddrinfo(host, port_str, &hints, &res);
+	ret = getaddrinfo(host, port_str, &hints, &res); // Resuelvo el host
 	if (ret != 0 || !res) {
 		return NET_PORT_ERROR;
 	}
 
 	NetPortState state = NET_PORT_ERROR;
+	// Iteración sobre cada dirección devuelta
 	for (struct addrinfo *p = res; p; p = p->ai_next) {
 		s = (socket_t)socket(p->ai_family, p->ai_socktype, p->ai_protocol);
 		if (s == INVALID_SOCKET) {
@@ -77,7 +89,7 @@ static NetPortState connect_with_timeout(const char *host, uint16_t port, int ti
 
 		ret = connect(s, p->ai_addr, (int)p->ai_addrlen);
 		if (ret == 0) {
-			state = NET_PORT_OPEN;
+			state = NET_PORT_OPEN; // Conexión exitosa inmediata
 			CLOSESOCK(s);
 			break;
 		}
@@ -85,7 +97,7 @@ static NetPortState connect_with_timeout(const char *host, uint16_t port, int ti
 #ifdef _WIN32
 		int wsaerr = WSAGetLastError();
 		if (wsaerr != WSAEWOULDBLOCK && wsaerr != WSAEINPROGRESS) {
-			CLOSESOCK(s);
+			CLOSESOCK(s); // conexión fallida o que no progresa
 			continue;
 		}
 #else
@@ -94,15 +106,15 @@ static NetPortState connect_with_timeout(const char *host, uint16_t port, int ti
 			continue;
 		}
 #endif
-
-		fd_set wfds; 
-		struct timeval tv;
+		// Odio que mezclen tipos y estructuras, que les cuesta ponerle un tipado a los structs
+		fd_set wfds; // escritura
+		struct timeval tv; // timeout
 		FD_ZERO(&wfds);
 		FD_SET(s, &wfds);
 		tv.tv_sec = timeout_ms / 1000;
 		tv.tv_usec = (timeout_ms % 1000) * 1000;
 
-		ret = select((int)(s + 1), NULL, &wfds, NULL, &tv);
+		ret = select((int)(s + 1), NULL, &wfds, NULL, &tv); // espero a que sea escribible
 		if (ret > 0 && FD_ISSET(s, &wfds)) {
 			int err = 0;
 			socklen_t len = sizeof(err);
@@ -192,7 +204,7 @@ int net_grab_banner(const char *host, uint16_t port, char *banner, int banner_le
 	return read_len;
 }
 
-NetPortState net_scan_udp(const char *host, uint16_t port, int timeout_ms) {
+static NetPortState connect_udp(const char *host, uint16_t port, int timeout_ms) {
 	char port_str[8];
 	struct addrinfo hints;
 	struct addrinfo *res = NULL;
@@ -232,7 +244,7 @@ NetPortState net_scan_udp(const char *host, uint16_t port, int timeout_ms) {
 		ret = select((int)(s + 1), &rfds, NULL, NULL, &tv);
 		if (ret > 0 && FD_ISSET(s, &rfds)) {
 			char buf[64];
-			ret = recvfrom(s, buf, sizeof(buf), 0, NULL, NULL);
+			ret = recvfrom(s, buf, sizeof(buf), 0, NULL, NULL); // probar si llega algo
 			if (ret >= 0) {
 				state = NET_PORT_OPEN; // recibimos algo
 			} else {
@@ -252,9 +264,13 @@ NetPortState net_scan_udp(const char *host, uint16_t port, int timeout_ms) {
 	return state;
 }
 
+NetPortState net_scan_udp(const char *host, uint16_t port, int timeout_ms) {
+    return connect_udp(host, port, timeout_ms);
+}
+
 NetPortState net_scan_tcp_syn(const char *host, uint16_t port, int timeout_ms) {
 	(void)host; // warnings
 	(void)port;
 	(void)timeout_ms;
-	return NET_PORT_ERROR; // todavia implementado en esta version
+	return NET_PORT_ERROR; // todavia no implementado
 }

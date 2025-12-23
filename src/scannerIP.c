@@ -21,7 +21,7 @@ int scanner_build_default_ports(PortList *list) {
 	if (!list) return -1;
 	memset(list, 0, sizeof(*list));
 
-	// Reservar un buffer razonable: 1024 + (9 * populares)
+	// Reservar un buffer razonable: 1024 + (9 * populares) + extra por realocs
 	size_t max_ports = 1024 + (popular_count * 9) + 32;
 	uint16_t *buffer = (uint16_t *)malloc(max_ports * sizeof(uint16_t));
 	if (!buffer) return -1;
@@ -110,7 +110,7 @@ typedef struct {
 	int timeout_ms;
 	size_t *cursor;
 	mutex_t *cursor_mtx;
-	mutex_t *print_mtx; // not used after refactor, kept for compatibility
+	mutex_t *print_mtx;
 
 	// resultados compartidos
 	struct PrintedResult *results;
@@ -122,8 +122,25 @@ typedef struct {
 	size_t *next_progress;
 	mutex_t *progress_mtx;
 	size_t total_ports;
-} WorkerArgs;
+} WorkerArgs; // argumentos para cada hilo laburante
 
+
+/*
+Compatibilidad con CreateThread: la firma DWORD WINAPI ThreadProc(LPVOID lpParameter)
+es la requerida por CreateThread/WaitForMultipleObjects en la API Win32.
+
+LPVOID es equivalente a void* (puntero genérico para pasar argumentos al hilo).
+
+DWORD es un entero sin signo de 32 bits usado como código de salida del hilo.
+
+WINAPI es una convención de llamada (stdcall) usada por la API Win32.
+*/
+
+/*
+En POSIX se usa la firma void worker_thread(void param)
+porque pthread_create espera un retorno void y un parámetro void
+porque linux la rompe ;)
+*/
 #ifdef _WIN32
 static DWORD WINAPI worker_thread(LPVOID param)
 #else
@@ -233,9 +250,9 @@ int scanner_run(const char *host, const PortList *list, ScanMode mode, const App
 		mutex_destroy(&res_mtx);
 		mutex_destroy(&progress_mtx);
 		return -1;
-	}
+	} // necesito una copia de args por hilo para no pisarlos más allá de que conecte las variables con punteros
 
-	for (size_t i = 0; i < worker_count; ++i) {
+	for (size_t i = 0; i < worker_count; i++) { // ++i?
 		args[i].host = host;
 		args[i].list = list;
 		args[i].mode = mode;
@@ -260,13 +277,13 @@ int scanner_run(const char *host, const PortList *list, ScanMode mode, const App
 	}
 
 #ifdef _WIN32
-	WaitForMultipleObjects((DWORD)worker_count, threads, TRUE, INFINITE);
+	WaitForMultipleObjects((DWORD)worker_count, threads, TRUE, INFINITE); // esperar a todos los hilos antes de borrarlos
 	for (size_t i = 0; i < worker_count; ++i) {
 		CloseHandle(threads[i]);
 	}
 #else
 	for (size_t i = 0; i < worker_count; ++i) {
-		pthread_join(threads[i], NULL);
+		pthread_join(threads[i], NULL); // aca me paso la verificacion porque linux la rompe ;)
 	}
 #endif
 
