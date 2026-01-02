@@ -5,6 +5,7 @@
 #include <stdlib.h>
 #include <errno.h>
 #include <time.h>
+#include <sys/select.h>
 
 
 static int set_nonblocking(socket_t s) {
@@ -58,7 +59,7 @@ static NetPortState connect_with_timeout(const char *host, uint16_t port, int ti
 
 	// Inicializo struct addrinfo para solicitar direcciones de
     // tipo stream/TCP (AF_UNSPEC, SOCK_STREAM, IPPROTO_TCP).
-	struct addrinfo hints; 
+	struct addrinfo hints;
 	struct addrinfo *res = NULL;
 	socket_t s = INVALID_SOCKET;
 	int ret;
