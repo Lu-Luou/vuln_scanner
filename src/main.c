@@ -49,11 +49,18 @@ int main(int argc, char **argv) {
 
     const char *port_arg = (argi < argc) ? argv[argi] : NULL;
 
+    /* Validar modo de escaneo: aceptar "tcp" (connect), "udp", o "syn"/"tcp_syn" */
     ScanMode mode = SCAN_TCP_CONNECT;
     if (strcmp(mode_str, "udp") == 0) {
         mode = SCAN_UDP;
-    } else if (strcmp(mode_str, "tcp_syn") == 0 || strcmp(mode_str, "tcpsyn") == 0) {
+    } else if (strcmp(mode_str, "tcp_syn") == 0 || strcmp(mode_str, "tcpsyn") == 0 || strcmp(mode_str, "syn") == 0) {
         mode = SCAN_TCP_SYN;
+    } else if (strcmp(mode_str, "tcp") == 0 || strcmp(mode_str, "connect") == 0 || strcmp(mode_str, "tcp_connect") == 0) {
+        mode = SCAN_TCP_CONNECT;
+    } else {
+        fprintf(stderr, "Modo de escaneo desconocido: %s\n", mode_str);
+        fprintf(stderr, "Modos válidos: tcp, udp, syn / tcp_syn)\n");
+        return 1;
     }
 
     AppConfig cfg;

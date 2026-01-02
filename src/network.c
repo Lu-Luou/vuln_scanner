@@ -11,6 +11,7 @@
 #include <netinet/tcp.h>
 #include <arpa/inet.h>
 #include <sys/types.h>
+#include <sys/time.h>
 
 
 static int set_nonblocking(socket_t s) {
@@ -256,6 +257,7 @@ static NetPortState connect_udp(const char *host, uint16_t port, int timeout_ms)
 		tv.tv_usec = (timeout_ms % 1000) * 1000;
 
 		ret = select((int)(s + 1), &rfds, NULL, NULL, &tv);
+#if defined(_WIN32)
 		if (ret > 0 && FD_ISSET(s, &rfds)) {
 			char buf[256];
 			int r = recv(s, buf, (int)sizeof(buf), 0);
@@ -264,6 +266,16 @@ static NetPortState connect_udp(const char *host, uint16_t port, int timeout_ms)
 			} else if (r == 0) {
 				state = NET_PORT_FILTERED; // EOF improbable en UDP
 			} else {
+#else
+		if (ret > 0 && FD_ISSET(s, &rfds)) {
+			char buf[256];
+			ssize_t r = recv(s, buf, sizeof(buf), 0);
+			if (r > 0) {
+				state = NET_PORT_OPEN; // recibimos datos
+			} else if (r == 0) {
+				state = NET_PORT_FILTERED; // EOF improbable en UDP
+			} else {
+#endif
 #ifdef _WIN32
 				int werr = WSAGetLastError();
 				if (werr == WSAECONNRESET) {
@@ -373,10 +385,12 @@ NetPortState net_scan_tcp_syn(const char *host, uint16_t port, int timeout_ms) {
 	iph->saddr = local.sin_addr.s_addr;
 	iph->daddr = dst->sin_addr.s_addr;
 
-	uint16_t src_port = (uint16_t)(1025 + (rand() % 55000));
+	// Elegir puertos y secuencia en host-order para validación posterior
+	uint16_t src_port = (uint16_t)(1025 + (rand() % (65535 - 1025)));
+	uint32_t seq_host = ((uint32_t)rand() << 16) ^ (uint32_t)rand();
 	tcph->source = htons(src_port);
 	tcph->dest = htons(port);
-	tcph->seq = htonl(rand());
+	tcph->seq = htonl(seq_host);
 	tcph->ack_seq = 0;
 	tcph->doff = sizeof(struct tcphdr) / 4;
 	tcph->syn = 1;
@@ -427,40 +441,131 @@ NetPortState net_scan_tcp_syn(const char *host, uint16_t port, int timeout_ms) {
 		close(send_sock); close(recv_sock); freeaddrinfo(res); return NET_PORT_ERROR;
 	}
 
-	// Esperar respuesta
-	fd_set rfds;
-	FD_ZERO(&rfds);
-	FD_SET(recv_sock, &rfds);
-	struct timeval tv;
-	tv.tv_sec = timeout_ms / 1000;
-	tv.tv_usec = (timeout_ms % 1000) * 1000;
-
+	/* Esperar potenciales múltiples respuestas dentro del timeout
+	   Para evitar races entre hilos y manejar respuestas reordenadas, no
+	   asumimos que la primera recv pertenece a este SYN: validamos
+	   que el ACK contiene seq+1 (en host order). Si no coincide, seguimos
+	   leyendo hasta agotar el timeout. */
 	NetPortState state = NET_PORT_FILTERED;
-	int sel = select(recv_sock + 1, &rfds, NULL, NULL, &tv); // Recibe proximo paquete TCP
-	if (sel > 0 && FD_ISSET(recv_sock, &rfds)) {
-		unsigned char buf[65536];
-		ssize_t r = recv(recv_sock, buf, sizeof(buf), 0); // Recibir cabecera ip
-		if (r > 0) {
-			struct iphdr *riph = (struct iphdr *)buf; // Extraer cabecera ip
-			size_t iphdr_len = riph->ihl * 4;
+	struct timeval start_tv, now_tv;
+	gettimeofday(&start_tv, NULL);
+
+	while (1) {
+		fd_set rfds;
+		FD_ZERO(&rfds);
+		FD_SET(recv_sock, &rfds);
+		gettimeofday(&now_tv, NULL);
+		long elapsed_ms = (now_tv.tv_sec - start_tv.tv_sec) * 1000 +
+						  (now_tv.tv_usec - start_tv.tv_usec) / 1000;
+		long remaining_ms = timeout_ms - elapsed_ms;
+		if (remaining_ms <= 0) {
+			state = NET_PORT_FILTERED;
+			break;
+		}
+		struct timeval tv;
+		tv.tv_sec = remaining_ms / 1000;
+		tv.tv_usec = (remaining_ms % 1000) * 1000;
+
+		int sel = select(recv_sock + 1, &rfds, NULL, NULL, &tv);
+		if (sel < 0) {
+			state = NET_PORT_ERROR;
+			break;
+		}
+		if (sel == 0) {
+			state = NET_PORT_FILTERED; // timeout
+			break;
+		}
+
+		if (FD_ISSET(recv_sock, &rfds)) {
+			unsigned char buf[65536];
+			ssize_t r = recv(recv_sock, buf, sizeof(buf), 0);
+			if (r <= 0) continue; // intentar nuevamente hasta timeout
+
+			struct iphdr *riph = (struct iphdr *)buf;
+			size_t iphdr_len = (riph->ihl > 0) ? (riph->ihl * 4) : sizeof(struct iphdr);
+			if ((size_t)r <= iphdr_len + sizeof(struct tcphdr)) continue;
 			struct tcphdr *rtcp = (struct tcphdr *)(buf + iphdr_len);
 
-			// Verificar que es respuesta de nuestro SYN
-			if (riph->saddr == iph->daddr && riph->daddr == iph->saddr &&
-				rtcp->source == htons(port) && rtcp->dest == htons(src_port)) {
-				if (rtcp->syn && rtcp->ack) {
-					state = NET_PORT_OPEN;
-				} else if (rtcp->rst) {
-					state = NET_PORT_CLOSED;
-				} else {
-					state = NET_PORT_FILTERED;
+			// Verificar dirección/puertos
+			if (riph->saddr != iph->daddr || riph->daddr != iph->saddr) continue;
+			if (ntohs(rtcp->source) != port || ntohs(rtcp->dest) != src_port) continue;
+
+			// Validar flags y número de ack (debe ser seq_host+1)
+			uint32_t resp_ack = ntohl(rtcp->ack_seq);
+			if (rtcp->syn && rtcp->ack && resp_ack == (seq_host + 1)) {
+				state = NET_PORT_OPEN;
+
+				/* Enviar un RST para evitar completar la conexión en el servidor
+				   (SYN scan típicamente envía RST inmediatamente tras recibir SYN-ACK). */
+				{
+					unsigned char rst_pkt[sizeof(struct iphdr) + sizeof(struct tcphdr)];
+					memset(rst_pkt, 0, sizeof(rst_pkt));
+					struct iphdr *riph2 = (struct iphdr *)rst_pkt;
+					struct tcphdr *rtcp2 = (struct tcphdr *)(rst_pkt + sizeof(struct iphdr));
+
+					riph2->ihl = 5;
+					riph2->version = 4;
+					riph2->tos = 0;
+					riph2->tot_len = htons(sizeof(struct iphdr) + sizeof(struct tcphdr));
+					riph2->id = htons(rand() & 0xFFFF);
+					riph2->frag_off = 0;
+					riph2->ttl = 64;
+					riph2->protocol = IPPROTO_TCP;
+					riph2->saddr = iph->saddr; // origen = nuestro IP
+					riph2->daddr = iph->daddr; // destino = target IP
+
+					rtcp2->source = htons(src_port);
+					rtcp2->dest = htons(port);
+					rtcp2->doff = sizeof(struct tcphdr) / 4;
+					rtcp2->rst = 1;
+
+					/* Usar ack_seq = servidor_seq + 1 para que el RST sea aceptado */
+					uint32_t server_seq = ntohl(rtcp->seq);
+					rtcp2->ack_seq = htonl(server_seq + 1);
+
+					/* Calcular checksums IP y TCP */
+					unsigned long sum2 = 0;
+					unsigned short *ip2h = (unsigned short *)riph2;
+					for (int i = 0; i < (int)(riph2->ihl * 2); ++i)
+						sum2 += ip2h[i];
+					while (sum2 >> 16) sum2 = (sum2 & 0xFFFF) + (sum2 >> 16);
+					riph2->check = (unsigned short)(~sum2);
+
+					struct {
+						uint32_t src_addr;
+						uint32_t dst_addr;
+						uint8_t zero;
+						uint8_t proto;
+						uint16_t tcp_len;
+					} pseudo2;
+					pseudo2.src_addr = riph2->saddr;
+					pseudo2.dst_addr = riph2->daddr;
+					pseudo2.zero = 0;
+					pseudo2.proto = IPPROTO_TCP;
+					pseudo2.tcp_len = htons(sizeof(struct tcphdr));
+
+					unsigned char chkbuf2[sizeof(pseudo2) + sizeof(struct tcphdr)];
+					memcpy(chkbuf2, &pseudo2, sizeof(pseudo2));
+					memcpy(chkbuf2 + sizeof(pseudo2), rtcp2, sizeof(struct tcphdr));
+					unsigned long csum2 = 0;
+					unsigned short *w2 = (unsigned short *)chkbuf2;
+					int wn2 = (sizeof(chkbuf2) + 1) / 2;
+					for (int i = 0; i < wn2; ++i) csum2 += w2[i];
+					while (csum2 >> 16) csum2 = (csum2 & 0xFFFF) + (csum2 >> 16);
+					rtcp2->check = (unsigned short)(~csum2);
+
+					sendto(send_sock, rst_pkt, sizeof(rst_pkt), 0, (struct sockaddr *)&to, sizeof(to));
 				}
+
+				break;
+			} else if (rtcp->rst) {
+				state = NET_PORT_CLOSED;
+				break;
+			} else {
+				/* no es la respuesta esperada: seguir esperando */
+				continue;
 			}
 		}
-	} else if (sel == 0) {
-		state = NET_PORT_FILTERED;
-	} else {
-		state = NET_PORT_ERROR;
 	}
 
 	close(send_sock);
