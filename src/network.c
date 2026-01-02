@@ -313,11 +313,15 @@ NetPortState net_scan_tcp_syn(const char *host, uint16_t port, int timeout_ms) {
 		return NET_PORT_ERROR;
 	}
 
-	struct sockaddr_in *dst = (struct sockaddr_in *)res->ai_addr;
+	struct sockaddr_in *dst = (struct sockaddr_in *)res->ai_addr; // Parseo destino
 
-	// Obtener IP origen
+	// Empieza el crafteo del socket RAW porque me encanta sufrir en bajo nivel
+	// Obtener IP origen local en base a ruta hacia destino, no tcp real
 	int tmp = socket(AF_INET, SOCK_DGRAM, 0);
-	if (tmp < 0) { freeaddrinfo(res); return NET_PORT_ERROR; }
+	if (tmp < 0) { 
+		freeaddrinfo(res);
+		return NET_PORT_ERROR;
+	}
 	struct sockaddr_in tmpaddr;
 	memset(&tmpaddr, 0, sizeof(tmpaddr));
 	tmpaddr.sin_family = AF_INET;
@@ -328,7 +332,9 @@ NetPortState net_scan_tcp_syn(const char *host, uint16_t port, int timeout_ms) {
 	socklen_t llen = sizeof(local);
 	memset(&local,0,sizeof(local));
 	if (getsockname(tmp, (struct sockaddr *)&local, &llen) < 0) {
-		close(tmp); freeaddrinfo(res); return NET_PORT_ERROR;
+		close(tmp);
+		freeaddrinfo(res);
+		return NET_PORT_ERROR;
 	}
 	close(tmp);
 
@@ -344,9 +350,13 @@ NetPortState net_scan_tcp_syn(const char *host, uint16_t port, int timeout_ms) {
 
 	int one = 1;
 	if (setsockopt(send_sock, IPPROTO_IP, IP_HDRINCL, &one, sizeof(one)) < 0) {
-		close(send_sock); close(recv_sock); freeaddrinfo(res); return NET_PORT_ERROR;
+		close(send_sock);
+		close(recv_sock);
+		freeaddrinfo(res);
+		return NET_PORT_ERROR;
 	}
 
+	// Construir paquete IP/TCP
 	unsigned char packet[4096];
 	memset(packet, 0, sizeof(packet));
 	struct iphdr *iph = (struct iphdr *)packet;
@@ -375,8 +385,10 @@ NetPortState net_scan_tcp_syn(const char *host, uint16_t port, int timeout_ms) {
 	// IP checksum
 	unsigned long sum = 0;
 	unsigned short *iphs = (unsigned short *)iph;
-	for (int i = 0; i < (int)(iph->ihl * 2); ++i) sum += iphs[i];
-	while (sum >> 16) sum = (sum & 0xFFFF) + (sum >> 16);
+	for (int i = 0; i < (int)(iph->ihl * 2); ++i) 
+		sum += iphs[i];
+	while (sum >> 16) 
+		sum = (sum & 0xFFFF) + (sum >> 16);
 	iph->check = (unsigned short)(~sum);
 
 	// TCP checksum (pseudo-header)
@@ -400,10 +412,14 @@ NetPortState net_scan_tcp_syn(const char *host, uint16_t port, int timeout_ms) {
 	unsigned long csum = 0;
 	unsigned short *w = (unsigned short *)chkbuf;
 	int wn = (sizeof(chkbuf) + 1) / 2;
-	for (int i = 0; i < wn; ++i) csum += w[i];
-	while (csum >> 16) csum = (csum & 0xFFFF) + (csum >> 16);
+	for (int i = 0; i < wn; ++i)
+		csum += w[i];
+	while (csum >> 16)
+		csum = (csum & 0xFFFF) + (csum >> 16);
 	tcph->check = (unsigned short)(~csum);
 
+
+	// Envia el paquete ya construido
 	struct sockaddr_in to = *dst;
 	ssize_t sent = sendto(send_sock, packet, sizeof(struct iphdr) + sizeof(struct tcphdr), 0,
 						  (struct sockaddr *)&to, sizeof(to));
@@ -411,6 +427,7 @@ NetPortState net_scan_tcp_syn(const char *host, uint16_t port, int timeout_ms) {
 		close(send_sock); close(recv_sock); freeaddrinfo(res); return NET_PORT_ERROR;
 	}
 
+	// Esperar respuesta
 	fd_set rfds;
 	FD_ZERO(&rfds);
 	FD_SET(recv_sock, &rfds);
@@ -419,14 +436,16 @@ NetPortState net_scan_tcp_syn(const char *host, uint16_t port, int timeout_ms) {
 	tv.tv_usec = (timeout_ms % 1000) * 1000;
 
 	NetPortState state = NET_PORT_FILTERED;
-	int sel = select(recv_sock + 1, &rfds, NULL, NULL, &tv);
+	int sel = select(recv_sock + 1, &rfds, NULL, NULL, &tv); // Recibe proximo paquete TCP
 	if (sel > 0 && FD_ISSET(recv_sock, &rfds)) {
 		unsigned char buf[65536];
-		ssize_t r = recv(recv_sock, buf, sizeof(buf), 0);
+		ssize_t r = recv(recv_sock, buf, sizeof(buf), 0); // Recibir cabecera ip
 		if (r > 0) {
-			struct iphdr *riph = (struct iphdr *)buf;
+			struct iphdr *riph = (struct iphdr *)buf; // Extraer cabecera ip
 			size_t iphdr_len = riph->ihl * 4;
 			struct tcphdr *rtcp = (struct tcphdr *)(buf + iphdr_len);
+
+			// Verificar que es respuesta de nuestro SYN
 			if (riph->saddr == iph->daddr && riph->daddr == iph->saddr &&
 				rtcp->source == htons(port) && rtcp->dest == htons(src_port)) {
 				if (rtcp->syn && rtcp->ack) {
