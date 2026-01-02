@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <errno.h>
 
 static const uint16_t popular_ports[] = {2049, 2222, 3000, 3306, 3389, 4000, 5000, 5173, 5900, 8000, 8080, 8443, 5432, 6379, 27017, 11211, 9200, 9092, 25565, 54321 /* <- test */};
 static const size_t popular_count = sizeof(popular_ports) / sizeof(popular_ports[0]);
@@ -70,15 +71,18 @@ static const char *state_to_str(NetPortState s) {
 	}
 }
 
-static NetPortState scan_port(const char *host, uint16_t port, ScanMode mode, int timeout_ms, int verbose) {
+static NetPortState scan_port(const char *host, uint16_t port, ScanMode mode, int timeout_ms, const AppConfig *cfg) {
 	switch (mode) {
 		case SCAN_TCP_CONNECT:
 			return net_scan_tcp_connect(host, port, timeout_ms);
-		case SCAN_TCP_SYN:
-			if (verbose) {
-				printf("[!] TCP SYN no implementado (requiere raw sockets)\n");
-			}
-			return NET_PORT_ERROR;
+			case SCAN_TCP_SYN:
+				if (cfg && cfg->os != OS_LINUX) {
+					if (cfg->verbose) {
+						printf("[!] TCP SYN solo soportado en Linux en esta implementación\n");
+					}
+					return NET_PORT_ERROR;
+				}
+				return net_scan_tcp_syn(host, port, timeout_ms);
 		case SCAN_UDP:
 			return net_scan_udp(host, port, timeout_ms);
 		default:
@@ -158,7 +162,7 @@ static void *worker_thread(void *param)
 		}
 
 		uint16_t port = w->list->ports[idx];
-		NetPortState st = scan_port(w->host, port, w->mode, w->timeout_ms, w->cfg->verbose);
+		NetPortState st = scan_port(w->host, port, w->mode, w->timeout_ms, w->cfg);
 		int should_store = 0;
 		if (w->cfg->verbose > 1) {
 			/* verbose >= 2: almacenar todos los estados */
@@ -216,6 +220,24 @@ int scanner_run(const char *host, const PortList *list, ScanMode mode, const App
 	if (net_init(cfg) != 0) {
 		fprintf(stderr, "No se pudo inicializar red\n");
 		return -1;
+	}
+
+	/* Si se solicita SCAN_TCP_SYN, validar permiso para RAW sockets */
+	if (mode == SCAN_TCP_SYN) {
+#ifdef __linux__
+		int check = socket(AF_INET, SOCK_RAW, IPPROTO_TCP);
+		if (check < 0) {
+			fprintf(stderr, "No hay permiso para sockets RAW: %s\n", strerror(errno));
+			fprintf(stderr, "Ejecute como root o asigne cap_net_raw a binario\n");
+			net_cleanup();
+			return -1;
+		}
+		close(check);
+#else
+		if (cfg->verbose) fprintf(stderr, "SYN scan solo soportado en Linux\n");
+		net_cleanup();
+		return -1;
+#endif
 	}
 
 	int timeout_ms = 800; // timeout moderado

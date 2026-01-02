@@ -7,6 +7,11 @@
 #include <time.h>
 #include <sys/select.h>
 
+#include <netinet/ip.h>
+#include <netinet/tcp.h>
+#include <arpa/inet.h>
+#include <sys/types.h>
+
 
 static int set_nonblocking(socket_t s) {
 #ifdef _WIN32
@@ -293,8 +298,155 @@ NetPortState net_scan_udp(const char *host, uint16_t port, int timeout_ms) {
 }
 
 NetPortState net_scan_tcp_syn(const char *host, uint16_t port, int timeout_ms) {
-	(void)host; // warnings
-	(void)port;
-	(void)timeout_ms;
-	return NET_PORT_ERROR; // todavia no implementado
+#ifdef _WIN32
+	(void)host; (void)port; (void)timeout_ms;
+	return NET_PORT_ERROR; // no implementado en Windows
+#else
+	struct addrinfo hints, *res = NULL;
+	char port_str[8];
+	snprintf(port_str, sizeof(port_str), "%u", (unsigned)port);
+	memset(&hints, 0, sizeof(hints));
+	hints.ai_family = AF_INET; // IPv4 only for SYN scan
+	hints.ai_socktype = SOCK_STREAM;
+	if (getaddrinfo(host, port_str, &hints, &res) != 0 || !res) {
+		if (res) freeaddrinfo(res);
+		return NET_PORT_ERROR;
+	}
+
+	struct sockaddr_in *dst = (struct sockaddr_in *)res->ai_addr;
+
+	// Obtener IP origen
+	int tmp = socket(AF_INET, SOCK_DGRAM, 0);
+	if (tmp < 0) { freeaddrinfo(res); return NET_PORT_ERROR; }
+	struct sockaddr_in tmpaddr;
+	memset(&tmpaddr, 0, sizeof(tmpaddr));
+	tmpaddr.sin_family = AF_INET;
+	tmpaddr.sin_addr.s_addr = dst->sin_addr.s_addr;
+	tmpaddr.sin_port = htons(53);
+	connect(tmp, (struct sockaddr *)&tmpaddr, sizeof(tmpaddr));
+	struct sockaddr_in local;
+	socklen_t llen = sizeof(local);
+	memset(&local,0,sizeof(local));
+	if (getsockname(tmp, (struct sockaddr *)&local, &llen) < 0) {
+		close(tmp); freeaddrinfo(res); return NET_PORT_ERROR;
+	}
+	close(tmp);
+
+	// Crear sockets RAW
+	int send_sock = socket(AF_INET, SOCK_RAW, IPPROTO_RAW);
+	int recv_sock = socket(AF_INET, SOCK_RAW, IPPROTO_TCP);
+	if (send_sock < 0 || recv_sock < 0) {
+		if (send_sock >= 0) close(send_sock);
+		if (recv_sock >= 0) close(recv_sock);
+		freeaddrinfo(res);
+		return NET_PORT_ERROR;
+	}
+
+	int one = 1;
+	if (setsockopt(send_sock, IPPROTO_IP, IP_HDRINCL, &one, sizeof(one)) < 0) {
+		close(send_sock); close(recv_sock); freeaddrinfo(res); return NET_PORT_ERROR;
+	}
+
+	unsigned char packet[4096];
+	memset(packet, 0, sizeof(packet));
+	struct iphdr *iph = (struct iphdr *)packet;
+	struct tcphdr *tcph = (struct tcphdr *)(packet + sizeof(struct iphdr));
+
+	iph->ihl = 5;
+	iph->version = 4;
+	iph->tos = 0;
+	iph->tot_len = htons(sizeof(struct iphdr) + sizeof(struct tcphdr));
+	iph->id = htons(rand() & 0xFFFF);
+	iph->frag_off = 0;
+	iph->ttl = 64;
+	iph->protocol = IPPROTO_TCP;
+	iph->saddr = local.sin_addr.s_addr;
+	iph->daddr = dst->sin_addr.s_addr;
+
+	uint16_t src_port = (uint16_t)(1025 + (rand() % 55000));
+	tcph->source = htons(src_port);
+	tcph->dest = htons(port);
+	tcph->seq = htonl(rand());
+	tcph->ack_seq = 0;
+	tcph->doff = sizeof(struct tcphdr) / 4;
+	tcph->syn = 1;
+	tcph->window = htons(65535);
+
+	// IP checksum
+	unsigned long sum = 0;
+	unsigned short *iphs = (unsigned short *)iph;
+	for (int i = 0; i < (int)(iph->ihl * 2); ++i) sum += iphs[i];
+	while (sum >> 16) sum = (sum & 0xFFFF) + (sum >> 16);
+	iph->check = (unsigned short)(~sum);
+
+	// TCP checksum (pseudo-header)
+	struct {
+		uint32_t src_addr;
+		uint32_t dst_addr;
+		uint8_t zero;
+		uint8_t proto;
+		uint16_t tcp_len;
+	} pseudo;
+	pseudo.src_addr = iph->saddr;
+	pseudo.dst_addr = iph->daddr;
+	pseudo.zero = 0;
+	pseudo.proto = IPPROTO_TCP;
+	pseudo.tcp_len = htons(sizeof(struct tcphdr));
+
+	unsigned char chkbuf[sizeof(pseudo) + sizeof(struct tcphdr)];
+	memcpy(chkbuf, &pseudo, sizeof(pseudo));
+	memcpy(chkbuf + sizeof(pseudo), tcph, sizeof(struct tcphdr));
+
+	unsigned long csum = 0;
+	unsigned short *w = (unsigned short *)chkbuf;
+	int wn = (sizeof(chkbuf) + 1) / 2;
+	for (int i = 0; i < wn; ++i) csum += w[i];
+	while (csum >> 16) csum = (csum & 0xFFFF) + (csum >> 16);
+	tcph->check = (unsigned short)(~csum);
+
+	struct sockaddr_in to = *dst;
+	ssize_t sent = sendto(send_sock, packet, sizeof(struct iphdr) + sizeof(struct tcphdr), 0,
+						  (struct sockaddr *)&to, sizeof(to));
+	if (sent <= 0) {
+		close(send_sock); close(recv_sock); freeaddrinfo(res); return NET_PORT_ERROR;
+	}
+
+	fd_set rfds;
+	FD_ZERO(&rfds);
+	FD_SET(recv_sock, &rfds);
+	struct timeval tv;
+	tv.tv_sec = timeout_ms / 1000;
+	tv.tv_usec = (timeout_ms % 1000) * 1000;
+
+	NetPortState state = NET_PORT_FILTERED;
+	int sel = select(recv_sock + 1, &rfds, NULL, NULL, &tv);
+	if (sel > 0 && FD_ISSET(recv_sock, &rfds)) {
+		unsigned char buf[65536];
+		ssize_t r = recv(recv_sock, buf, sizeof(buf), 0);
+		if (r > 0) {
+			struct iphdr *riph = (struct iphdr *)buf;
+			size_t iphdr_len = riph->ihl * 4;
+			struct tcphdr *rtcp = (struct tcphdr *)(buf + iphdr_len);
+			if (riph->saddr == iph->daddr && riph->daddr == iph->saddr &&
+				rtcp->source == htons(port) && rtcp->dest == htons(src_port)) {
+				if (rtcp->syn && rtcp->ack) {
+					state = NET_PORT_OPEN;
+				} else if (rtcp->rst) {
+					state = NET_PORT_CLOSED;
+				} else {
+					state = NET_PORT_FILTERED;
+				}
+			}
+		}
+	} else if (sel == 0) {
+		state = NET_PORT_FILTERED;
+	} else {
+		state = NET_PORT_ERROR;
+	}
+
+	close(send_sock);
+	close(recv_sock);
+	freeaddrinfo(res);
+	return state;
+#endif
 }
