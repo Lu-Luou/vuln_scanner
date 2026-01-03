@@ -104,6 +104,7 @@ ccache/
 *.bak
 *.orig
 .env
+vuln_scanner
 
 # Ignore common MSVC/msbuild output (nested Debug/Release and platform folders)
 x64/
