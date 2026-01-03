@@ -5,9 +5,6 @@
 #include <string.h>
 #include <errno.h>
 
-static const uint16_t popular_ports[] = {2049, 2222, 3000, 3306, 3389, 4000, 5000, 5173, 5900, 8000, 8080, 8443, 5432, 6379, 27017, 11211, 9200, 9092, 25565, 54321 /* <- test */};
-static const size_t popular_count = sizeof(popular_ports) / sizeof(popular_ports[0]);
-
 static int add_port(uint16_t port, uint8_t *seen, uint16_t *buffer, size_t *count, size_t max_count) {
 	if (port == 0 || port > MAX_PORT) return 0;
 	if (seen[port]) return 0;
@@ -240,7 +237,7 @@ int scanner_run(const char *host, const PortList *list, ScanMode mode, const App
 #endif
 	}
 
-	int timeout_ms = 800; // timeout moderado
+	int timeout_ms = (cfg && cfg->timeout_ms > 0) ? cfg->timeout_ms : 800; // timeout moderado (configurable)
 	size_t cursor = 0;
 	size_t processed = 0;
 	size_t next_progress = 128;
@@ -256,8 +253,9 @@ int scanner_run(const char *host, const PortList *list, ScanMode mode, const App
 	PrintedResult *results = (PrintedResult *)malloc(list->count * sizeof(PrintedResult));
 	size_t res_count = 0;
 
-	// elegir cantidad de hilos (max 32 o cantidad de puertos si es menor)
-	size_t worker_count = list->count < 32 ? list->count : 32;
+	// elegir cantidad de hilos (max configurable en cfg->max_threads o cantidad de puertos si es menor)
+	size_t max_threads = (cfg && cfg->max_threads > 0) ? (size_t)cfg->max_threads : 32;
+	size_t worker_count = list->count < max_threads ? list->count : max_threads;
 	if (worker_count == 0) {
 		net_cleanup();
 		mutex_destroy(&cursor_mtx);
