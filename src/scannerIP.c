@@ -1,4 +1,5 @@
 #include "scannerIP.h"
+#include "analysis.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -329,10 +330,29 @@ int scanner_run(const char *host, const PortList *list, ScanMode mode, const App
 			}
 		}
 		const char *proto = (pr->mode == SCAN_UDP) ? "udp" : "tcp";
-		if (pr->banner_len > 0) {
-			printf("[%5u/%s] %s | banner: %s\n", pr->port, proto, state_to_str(pr->state), pr->banner);
+		if (pr->state == NET_PORT_OPEN && pr->mode != SCAN_UDP) {
+			struct port_analysis pa;
+			if (analyze_port(host, pr->port, &pa) == 0 && pa.is_open) {
+				if (pa.banner[0]) {
+					printf("[%5u/%s] %s | service=%s proto=%s | banner: %s\n", pr->port, proto, state_to_str(pr->state), pa.service, pa.proto, pa.banner);
+				} else {
+					/* No banner but service identified */
+					printf("[%5u/%s] %s | service=%s proto=%s\n", pr->port, proto, state_to_str(pr->state), pa.service, pa.proto);
+				}
+			} else {
+				/* Fallback banner */
+				if (pr->banner_len > 0) {
+					printf("[%5u/%s] %s | banner: %s\n", pr->port, proto, state_to_str(pr->state), pr->banner);
+				} else {
+					printf("[%5u/%s] %s\n", pr->port, proto, state_to_str(pr->state));
+				}
+			}
 		} else {
-			printf("[%5u/%s] %s\n", pr->port, proto, state_to_str(pr->state));
+			if (pr->banner_len > 0) {
+				printf("[%5u/%s] %s | banner: %s\n", pr->port, proto, state_to_str(pr->state), pr->banner);
+			} else {
+				printf("[%5u/%s] %s\n", pr->port, proto, state_to_str(pr->state));
+			}
 		}
 	}
 
